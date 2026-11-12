@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>English to Hinglish Translator</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --card: #ffffff; --text: #1f2430; --muted: #6b7280;
+    --primary: #4f46e5; --primary-dark: #4338ca; --border: #e2e5ee; --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12141c; --card: #1c1f2b; --text: #e8eaf1; --muted: #9aa0b4; --border: #2e3345; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  label.title { display: block; font-weight: 600; margin-bottom: 8px; }
+  textarea { width: 100%; min-height: 150px; padding: 12px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 1rem; font-family: inherit; resize: vertical; }
+  textarea:focus { outline: 2px solid var(--primary); border-color: transparent; }
+  .drop { border: 2px dashed var(--border); border-radius: 12px; padding: 22px; text-align: center; color: var(--muted); cursor: pointer; transition: .15s; }
+  .drop.over { border-color: var(--primary); color: var(--primary); }
+  .drop img { max-width: 100%; max-height: 220px; border-radius: 8px; margin-top: 10px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  button { border: 0; border-radius: 10px; padding: 11px 18px; font-size: 1rem; cursor: pointer; font-weight: 600; }
+  .primary { background: var(--primary); color: #fff; }
+  .primary:hover { background: var(--primary-dark); }
+  .primary:disabled { opacity: .6; cursor: wait; }
+  .ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  #status { color: var(--muted); font-size: .9rem; margin-top: 10px; min-height: 1.2em; }
+  #output { white-space: pre-wrap; word-break: break-word; min-height: 80px; font-size: 1.05rem; line-height: 1.6; }
+  .hint { font-size: .85rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>English ➜ Hinglish Translator</h1>
+  <p class="sub">Text likho, paste karo ya photo daalo — Hinglish mein translate ho jayega.</p>
+
+  <div class="card">
+    <label class="title" for="input">Text (English)</label>
+    <textarea id="input" placeholder="Yahan English text likho ya paste karo... (Ctrl+V se image bhi paste kar sakte ho)"></textarea>
+
+    <div style="margin-top:14px">
+      <label class="title">Ya photo upload karo</label>
+      <div class="drop" id="drop">
+        📷 Photo yahan drop karo ya click karke chuno
+        <div><img id="preview" alt="" hidden></div>
+      </div>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="go">Translate karo</button>
+      <button class="ghost" id="clear">Clear</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <label class="title">Hinglish Result</label>
+    <div id="output"></div>
+    <div class="row">
+      <button class="ghost" id="copy">📋 Copy</button>
+    </div>
+    <p class="hint">Note: Translation machine se hota hai, isliye kabhi-kabhi thoda sudhaar karna pad sakta hai.</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const input = $('input'), output = $('output'), statusEl = $('status'), goBtn = $('go');
+
+const setStatus = t => statusEl.textContent = t || '';
+
+/* ---------- Devanagari -> Roman (fallback transliterator) ---------- */
+const CONS = {'क':'k','ख':'kh','ग':'g','घ':'gh','ङ':'n','च':'ch','छ':'chh','ज':'j','झ':'jh','ञ':'n','ट':'t','ठ':'th','ड':'d','ढ':'dh','ण':'n','त':'t','थ':'th','द':'d','ध':'dh','न':'n','प':'p','फ':'f','ब':'b','भ':'bh','म':'m','य':'y','र':'r','ल':'l','व':'v','श':'sh','ष':'sh','स':'s','ह':'h'};
+const NUKTA = {'ड':'r','ढ':'rh','फ':'f','ज':'z','क':'q','ख':'kh','ग':'g'};
+const VOW = {'अ':'a','आ':'aa','इ':'i','ई':'ee','उ':'u','ऊ':'oo','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o','औ':'au','ऑ':'o'};
+const MATRA = {'ा':'aa','ि':'i','ी':'ee','ु':'u','ू':'oo','ृ':'ri','े':'e','ै':'ai','ो':'o','ौ':'au','ॉ':'o'};
+const isDev = c => c && c >= '\u0900' && c <= '\u097F';
+
+function deva2roman(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (CONS[c]) {
+      let base = CONS[c];
+      if (s[i+1] === '़') { base = NUKTA[c] || base; i++; }
+      const n = s[i+1];
+      if (MATRA[n]) { out += base + MATRA[n]; i++; }
+      else if (n === '्') { out += base; i++; }
+      else {
+        const wordEnd = !isDev(n) || n === '।';
+        out += base + (wordEnd ? '' : 'a');
+      }
+    } else if (VOW[c]) out += VOW[c];
+    else if (c === 'ं' || c === 'ँ') out += 'n';
+    else if (c === 'ः') out += 'h';
+    else if (c === '।') out += '.';
+    else if (c >= '०' && c <= '९') out += String(c.charCodeAt(0) - 0x966);
+    else if (c !== '़' && c !== '्') out += c;
+  }
+  return out;
+}
+
+/* ---------- Translation ---------- */
+async function googleTranslate(text) {
+  const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=hi&dt=t&dt=rm&q=' + encodeURIComponent(text);
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('google ' + r.status);
+  const data = await r.json();
+  let hindi = '', roman = '';
+  for (const seg of (data[0] || [])) {
+    if (typeof seg[0] === 'string') hindi += seg[0];
+    if (typeof seg[3] === 'string') roman += seg[3];
+    else if (seg[0] == null && typeof seg[2] === 'string') roman += seg[2];
+  }
+  return { hindi, roman };
+}
+
+async function myMemory(text) {
+  const r = await fetch('https://api.mymemory.translated.net/get?langpair=en|hi&q=' + encodeURIComponent(text));
+  if (!r.ok) throw new Error('mymemory ' + r.status);
+  const d = await r.json();
+  return { hindi: d.responseData.translatedText || '', roman: '' };
+}
+
+async function translateLine(line) {
+  if (!line.trim()) return '';
+  let res;
+  try { res = await googleTranslate(line); }
+  catch (e) { res = await myMemory(line); }
+  const looksLatin = res.roman && !/[\u0900-\u097F]/.test(res.roman);
+  return (looksLatin ? res.roman : deva2roman(res.hindi)).trim();
+}
+
+// Lambe line ko chhote tukdon mein todta hai (sentence ke hisaab se)
+function chunkLine(line, max = 900) {
+  if (line.length <= max) return [line];
+  const parts = line.match(/[^.!?]+[.!?]*\s*/g) || [line];
+  const chunks = []; let cur = '';
+  for (const p of parts) {
+    if ((cur + p).length > max && cur) { chunks.push(cur); cur = p; } else cur += p;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+async function translateAll(text) {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  for (let i = 0; i < lines.length; i++) {
+    setStatus(`Translate ho raha hai... (${i + 1}/${lines.length})`);
+    const pieces = [];
+    for (const ch of chunkLine(lines[i])) pieces.push(await translateLine(ch));
+    result.push(pieces.join(' '));
+  }
+  return result.join('\n');
+}
+
+async function run() {
+  const text = input.value.trim();
+  if (!text) { setStatus('Pehle kuch text likho ya photo daalo.'); return; }
+  goBtn.disabled = true; output.textContent = '';
+  try {
+    output.textContent = await translateAll(text);
+    setStatus('Ho gaya ✅');
+  } catch (e) {
+    console.error(e);
+    setStatus('Error aaya. Internet check karo aur dobara try karo.');
+  } finally { goBtn.disabled = false; }
+}
+
+/* ---------- Image OCR ---------- */
+async function readImage(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const prev = $('preview'); prev.src = url; prev.hidden = false;
+  goBtn.disabled = true;
+  try {
+    setStatus('Photo se text nikal raha hoon...');
+    const { data } = await Tesseract.recognize(file, 'eng', {
+      logger: m => { if (m.status === 'recognizing text') setStatus('Photo padh raha hoon... ' + Math.round(m.progress * 100) + '%'); }
+    });
+    const txt = (data.text || '').trim();
+    if (!txt) { setStatus('Photo mein text nahi mila. Saaf photo try karo.'); goBtn.disabled = false; return; }
+    input.value = txt;
+    goBtn.disabled = false;
+    await run();
+  } catch (e) {
+    console.error(e);
+    setStatus('Photo padhne mein dikkat aayi. Dobara try karo.');
+    goBtn.disabled = false;
+  }
+}
+
+const drop = $('drop'), fileInput = $('file');
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => readImage(e.target.files[0]));
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => readImage(e.dataTransfer.files[0]));
+document.addEventListener('paste', e => {
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+  if (item) { e.preventDefault(); readImage(item.getAsFile()); }
+});
+
+/* ---------- Buttons ---------- */
+goBtn.addEventListener('click', run);
+input.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') run(); });
+$('clear').addEventListener('click', () => {
+  input.value = ''; output.textContent = ''; setStatus('');
+  $('preview').hidden = true; fileInput.value = '';
+});
+$('copy').addEventListener('click', async () => {
+  if (!output.textContent) return;
+  try { await navigator.clipboard.writeText(output.textContent); setStatus('Copy ho gaya ✅'); }
+  catch { setStatus('Copy nahi ho paya, manually select karke copy karo.'); }
+});
+</script>
+</body>
+</html>
