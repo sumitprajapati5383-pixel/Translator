@@ -35,6 +35,10 @@
   #status { color: var(--muted); font-size: .9rem; margin-top: 10px; min-height: 1.2em; }
   #output { white-space: pre-wrap; word-break: break-word; min-height: 80px; font-size: 1.05rem; line-height: 1.6; }
   .hint { font-size: .85rem; color: var(--muted); margin: 8px 0 0; }
+  .opts { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .opts label.chk { display: flex; gap: 8px; align-items: center; margin: 6px 0; font-size: .95rem; cursor: pointer; }
+  .opts input[type=checkbox] { width: 18px; height: 18px; }
+  .opts input[type=text] { width: 100%; margin-top: 8px; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: .95rem; font-family: inherit; }
 </style>
 </head>
 <body>
@@ -61,6 +65,14 @@
       </div>
     </div>
 
+    <div class="opts">
+      <label class="title" style="margin-bottom:4px">English mein hi rakho:</label>
+      <label class="chk"><input type="checkbox" id="optHead" checked> Heading / title (jaise "Philosophy of Technical Analysis")</label>
+      <label class="chk"><input type="checkbox" id="optNames" checked> Naam aur important words (Capital letter wale, short forms jaise RSI)</label>
+      <label class="chk"><input type="checkbox" id="optFreq" checked> Baar-baar aane wale main words</label>
+      <input type="text" id="optManual" placeholder="Aur koi word jo English mein hi chahiye? (comma se alag karo, jaise: chart, trend, price)">
+    </div>
+
     <div class="row">
       <button class="primary" id="go">Translate karo</button>
       <button class="ghost" id="clear">Clear</button>
@@ -71,6 +83,7 @@
   <div class="card">
     <label class="title">Hinglish Result</label>
     <div id="output"></div>
+    <p class="hint" id="kept"></p>
     <div class="row">
       <button class="ghost" id="copy">📋 Copy</button>
     </div>
@@ -158,16 +171,100 @@ function chunkLine(line, max = 900) {
   return chunks;
 }
 
-async function translateAll(text) {
+/* ---------- English mein rakhne wale words ---------- */
+const SMALL = new Set(['of','the','and','in','to','a','an','for','on','at','by','with','from','or','vs','is','are']);
+const STOP = new Set(('about above after again against along also always among another because been before being below between both could does doing during each either every first found from further have having here however into itself just kind later least less like made make many might more most much must never next none often once only other others over same shall should since some still such than that their them then there these they this those though through thus under until upon used uses using very were what when where whether which while whom whose will with within without would your yours really people often usually general simple systems system').split(/\s+/));
+const SENT_START = new Set(['in','the','at','on','a','an','it','this','that','these','those','he','she','we','they','when','if','but','as','so','for','by','with','from','after','before','however','first','then','there','here','our','my','his','her','its','their','you','i']);
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function isHeading(line) {
+  const t = line.trim();
+  if (!t) return false;
+  const words = t.split(/\s+/);
+  if (words.length > 8 || /[.,;:!?]$/.test(t)) return false;
+  const letters = t.replace(/[^A-Za-z]/g, '');
+  if (letters.length < 3) return false;
+  if (letters === letters.toUpperCase()) return true;
+  const sig = words.filter(w => /[A-Za-z]/.test(w) && !SMALL.has(w.toLowerCase()));
+  if (!sig.length) return false;
+  return sig.filter(w => /^[^A-Za-z]*[A-Z]/.test(w)).length / sig.length >= 0.8;
+}
+
+function collectTerms(lines, o, multi) {
+  const map = new Map();
+  const add = t => { t = (t || '').trim(); if (t.length < 2) return; const k = t.toLowerCase(); if (!map.has(k)) map.set(k, t); };
+  o.manual.forEach(add);
+  const body = lines.filter(l => l.trim() && !(o.headings && multi && isHeading(l)));
+
+  if (o.names) {
+    for (const l of body) {
+      (l.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b/g) || []).forEach(m => {
+        const w = m.split(/\s+/);
+        while (w.length && SENT_START.has(w[0].toLowerCase())) w.shift();
+        if (w.length) add(w.join(' '));
+      });
+      (l.match(/\b[A-Z]{2,}\b/g) || []).forEach(add);
+      (l.match(/\b[a-z]+[A-Z][A-Za-z]*\b|\b[A-Z][a-z]+[A-Z][A-Za-z]*\b/g) || []).forEach(add);
+      const multi = [...l.matchAll(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b/g)].map(x => [x.index, x.index + x[0].length]);
+      const re = /\b[A-Z][a-z]{2,}\b/g; let m;
+      while ((m = re.exec(l))) {
+        if (multi.some(([a, b]) => m.index >= a && m.index < b)) continue;
+        const before = l.slice(0, m.index);
+        if (before.trim() === '' || /[.!?]["')\]]?\s+$/.test(before)) continue;
+        if (SENT_START.has(m[0].toLowerCase())) continue;
+        add(m[0]);
+      }
+    }
+  }
+
+  if (o.frequent) {
+    const words = body.join(' ').match(/\b[A-Za-z]{5,}\b/g) || [];
+    if (words.length >= 40) {
+      const c = {};
+      words.forEach(w => { w = w.toLowerCase(); if (!STOP.has(w)) c[w] = (c[w] || 0) + 1; });
+      Object.entries(c).filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).slice(0, 12).forEach(([w]) => add(w));
+    }
+  }
+  return [...map.values()].sort((a, b) => b.length - a.length);
+}
+
+async function translateProtected(chunk, terms, used) {
+  const store = [];
+  let p = chunk;
+  for (const t of terms) {
+    const re = new RegExp('(?<![A-Za-z0-9])' + esc(t) + '(?![A-Za-z0-9])', 'gi');
+    p = p.replace(re, m => { store.push(m); return `[[${store.length - 1}]]`; });
+  }
+  if (!store.length) return translateLine(chunk);
+  let out = await translateLine(p);
+  let count = 0;
+  out = out.replace(/\[\s*\[\s*([0-9०-९]+)\s*\]\s*\]/g, (m, d) => {
+    const i = +String(d).replace(/[०-९]/g, c => c.charCodeAt(0) - 0x966);
+    if (store[i] === undefined) return m;
+    count++; used.add(store[i]); return store[i];
+  });
+  // Agar koi word translation mein kho gaya to us line ko normal translate kar do
+  if (count !== store.length) return translateLine(chunk);
+  return out;
+}
+
+async function translateAll(text, o) {
   const lines = text.split(/\r?\n/);
+  const multi = lines.filter(l => l.trim()).length > 1;
+  const terms = collectTerms(lines, o, multi);
+  const used = new Set();
+  let headings = 0;
   const result = [];
   for (let i = 0; i < lines.length; i++) {
     setStatus(`Translate ho raha hai... (${i + 1}/${lines.length})`);
+    if (o.headings && multi && isHeading(lines[i])) { result.push(lines[i].trim()); headings++; continue; }
     const pieces = [];
-    for (const ch of chunkLine(lines[i])) pieces.push(await translateLine(ch));
+    for (const ch of chunkLine(lines[i])) pieces.push(await translateProtected(ch, terms, used));
     result.push(pieces.join(' '));
   }
-  return result.join('\n');
+  const seen = new Map();
+  used.forEach(w => { if (!seen.has(w.toLowerCase())) seen.set(w.toLowerCase(), w); });
+  return { text: result.join('\n'), kept: [...seen.values()], headings };
 }
 
 async function run() {
@@ -175,7 +272,18 @@ async function run() {
   if (!text) { setStatus('Pehle kuch text likho ya photo daalo.'); return; }
   goBtn.disabled = true; output.textContent = '';
   try {
-    output.textContent = await translateAll(text);
+    const opts = {
+      headings: $('optHead').checked,
+      names: $('optNames').checked,
+      frequent: $('optFreq').checked,
+      manual: $('optManual').value.split(',').map(s => s.trim()).filter(Boolean)
+    };
+    const r = await translateAll(text, opts);
+    output.textContent = r.text;
+    const parts = [];
+    if (r.headings) parts.push(r.headings + ' heading/title');
+    if (r.kept.length) parts.push(r.kept.slice(0, 30).join(', '));
+    $('kept').textContent = parts.length ? 'English mein rakhe gaye: ' + parts.join(' | ') : '';
     setStatus('Ho gaya ✅');
   } catch (e) {
     console.error(e);
@@ -335,7 +443,7 @@ ocrBtn.addEventListener('click', readImage);
 goBtn.addEventListener('click', run);
 input.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') run(); });
 $('clear').addEventListener('click', () => {
-  input.value = ''; output.textContent = ''; setStatus('');
+  input.value = ''; output.textContent = ''; $('kept').textContent = ''; setStatus('');
   cropBox.hidden = true; currentImg = null; resetSel(); fileInput.value = '';
 });
 $('copy').addEventListener('click', async () => {
